@@ -84,7 +84,6 @@ prompt_config() {
     echo -e "${BOLD}${CYAN}════════════════════════════════════════${NC}"
     echo ""
 
-    # Disk selection
     echo -e "${BOLD}Available disks:${NC}"
     lsblk -dno NAME,SIZE,MODEL | grep -v "loop\|sr\|ram"
     echo ""
@@ -94,11 +93,9 @@ prompt_config() {
     fi
 
     if [[ "$PART_MODE" == "1" ]]; then
-        # Auto partition — we handle everything
         EFI_PART=""
         ROOT_PART=""
     else
-        # Manual — ask user which partitions to use
         echo ""
         echo -e "${BOLD}Enter your pre-created partitions:${NC}"
         read -rp "EFI partition (e.g. /dev/sda1): " EFI_PART
@@ -108,17 +105,14 @@ prompt_config() {
         fi
     fi
 
-    # Hostname
     read -rp "Hostname [archbuntu]: " HOSTNAME
     HOSTNAME=${HOSTNAME:-archbuntu}
 
-    # Username
     read -rp "Username: " USERNAME
     if [[ -z "$USERNAME" ]]; then
         error "Username cannot be empty."
     fi
 
-    # Password
     read -rs -p "Password for $USERNAME: " USER_PASS
     echo ""
     read -rs -p "Confirm password: " USER_PASS_CONFIRM
@@ -127,7 +121,6 @@ prompt_config() {
         error "Passwords do not match."
     fi
 
-    # Root password
     read -rs -p "Root password: " ROOT_PASS
     echo ""
     read -rs -p "Confirm root password: " ROOT_PASS_CONFIRM
@@ -136,17 +129,15 @@ prompt_config() {
         error "Root passwords do not match."
     fi
 
-    # Timezone
     read -rp "Timezone [Asia/Kolkata]: " TIMEZONE
     TIMEZONE=${TIMEZONE:-Asia/Kolkata}
 
-    # Mirror country
     read -rp "Mirror country for reflector (e.g. US, IN, DE) [IN]: " MIRROR_COUNTRY
     MIRROR_COUNTRY=${MIRROR_COUNTRY:-IN}
 
     echo ""
     log "Summary:"
-    echo "  Disk:       $TARGET_DISK (will be erased!)" 
+    echo "  Disk:       $TARGET_DISK (will be erased!)"
     echo "  Part mode:  $([ "$PART_MODE" == "1" ] && echo "Auto" || echo "Manual")"
     echo "  Hostname:   $HOSTNAME"
     echo "  Username:   $USERNAME"
@@ -203,7 +194,7 @@ choose_packages() {
     echo "  [x] Firefox (web browser)"
     echo "  [x] VLC (media player)"
     echo "  [x] Htop (system monitor)"
-    echo "  [x] Neofetch / Fastfetch"
+    echo "  [x] Fastfetch"
     echo "  [x] Flatpak support"
     echo "  [x] USB utils (usbutils)"
     echo "  [x] Bluetooth support (bluez bluez-utils)"
@@ -217,7 +208,7 @@ choose_packages() {
     read -rp "Extra packages: " EXTRA_PACKAGES
 }
 
-# ─── Partitioning (UEFI + systemd-boot) ───────────────────
+# ─── Partitioning ─────────────────────────────────────────
 
 partition_disk() {
     if [[ "$PART_MODE" == "1" ]]; then
@@ -260,12 +251,8 @@ partition_disk() {
 
 setup_mirrors() {
     log "Setting up mirrors for $MIRROR_COUNTRY..."
-    if command -v reflector &>/dev/null; then
-        reflector --country "$MIRROR_COUNTRY" --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist || warn "Reflector failed, using default mirrors."
-    else
-        pacman -S --noconfirm reflector &>/dev/null || true
-        reflector --country "$MIRROR_COUNTRY" --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist || warn "Reflector failed, using default mirrors."
-    fi
+    pacman -S --noconfirm reflector || true
+    reflector --country "$MIRROR_COUNTRY" --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist || warn "Reflector failed, using default mirrors."
 }
 
 # ─── Base install ─────────────────────────────────────────
@@ -295,16 +282,19 @@ DRIVER_CHOICE="__DRIVER_CHOICE__"
 ENABLE_MULTILIB="__ENABLE_MULTILIB__"
 ENABLE_OPTIONAL="__ENABLE_OPTIONAL__"
 EXTRA_PACKAGES="__EXTRA_PACKAGES__"
+ROOT_PART="__ROOT_PART__"
+
+set -e
 
 # ─── Locale ───
 echo "[ARCHBUNTU] Setting locale..."
 sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
-locale-gen &>/dev/null
+locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 # ─── Timezone ───
 echo "[ARCHBUNTU] Setting timezone..."
-ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
 hwclock --systohc
 
 # ─── Hostname ───
@@ -331,15 +321,8 @@ sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf
 # ─── Sync ───
 pacman -Sy --noconfirm
 
-# ─── Base packages ───
-echo "[ARCHBUNTU] Installing base packages..."
-INSTALL_PKGS="base-devel sudo git nano networkmanager"
-
-# GNOME
-INSTALL_PKGS="$INSTALL_PKGS gnome gnome-tweaks"
-
-# Fonts
-INSTALL_PKGS="$INSTALL_PKGS noto-fonts noto-fonts-cjk noto-fonts-emoji ttf-liberation ttf-dejavu"
+# ─── Build package list ───
+INSTALL_PKGS="base-devel sudo git nano networkmanager gdm gnome gnome-tweaks noto-fonts noto-fonts-cjk noto-fonts-emoji ttf-liberation ttf-dejavu kgx"
 
 # ─── Driver packages ───
 case "$DRIVER_CHOICE" in
@@ -380,25 +363,26 @@ if [[ -n "$EXTRA_PACKAGES" ]]; then
     INSTALL_PKGS="$INSTALL_PKGS $EXTRA_PACKAGES"
 fi
 
-pacman -S --noconfirm $INSTALL_PKGS
+# ─── Install all packages ───
+echo "[ARCHBUNTU] Installing packages..."
+pacman -S --noconfirm --needed $INSTALL_PKGS
 
 # ─── Enable services ───
 echo "[ARCHBUNTU] Enabling services..."
-systemctl enable NetworkManager
 systemctl enable gdm
+systemctl enable NetworkManager
 systemctl enable bluetooth 2>/dev/null || true
 systemctl enable vboxservice 2>/dev/null || true
 
 # ─── Configure NVIDIA (if applicable) ───
+ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
+
 if [[ "$DRIVER_CHOICE" == "1" ]] || [[ "$DRIVER_CHOICE" == "2" ]]; then
     echo "[ARCHBUNTU] Configuring NVIDIA..."
     echo "options nvidia-drm modeset=1" > /etc/modprobe.d/nvidia-drm.conf
     sed -i 's/^MODULES=()/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
-
-    ROOT_UUID=$(blkid -s UUID -o value __ROOT_PART__)
     echo "root=UUID=$ROOT_UUID rw rootfstype=ext4 nvidia-drm.modeset=1" > /etc/kernel/cmdline
 else
-    ROOT_UUID=$(blkid -s UUID -o value __ROOT_PART__)
     echo "root=UUID=$ROOT_UUID rw rootfstype=ext4" > /etc/kernel/cmdline
 fi
 
@@ -428,41 +412,71 @@ mkinitcpio -P
 echo "[ARCHBUNTU] Installing paru AUR helper..."
 cd /tmp
 sudo -u "$USERNAME" bash -c '
-    git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin 2>/dev/null
+    git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
     cd /tmp/paru-bin
-    makepkg -si --noconfirm 2>/dev/null
+    makepkg -si --noconfirm
 '
 rm -rf /tmp/paru-bin
 
-# ─── Install Yaru themes + Dash to Dock ───
+# ─── Install Yaru themes + Dash to Dock via paru ───
 echo "[ARCHBUNTU] Installing Yaru themes and Dash to Dock..."
 sudo -u "$USERNAME" bash -c '
-    paru -S --noconfirm \
+    paru -S --noconfirm --needed \
         yaru-icon-theme yaru-gtk-theme yaru-gnome-shell-theme \
-        gnome-shell-extension-dash-to-dock \
-        2>/dev/null
+        gnome-shell-extension-dash-to-dock
 '
 
-# ─── Enable GNOME extensions ───
-echo "[ARCHBUNTU] Enabling Dash to Dock..."
-sudo -u "$USERNAME" bash -c '
-    gsettings set org.gnome.shell enabled-extensions "[\"dash-to-dock@micxgx.gmail.com\"]" 2>/dev/null || true
-'
+# ─── Build first-login setup script (gsettings can ONLY run with a display) ───
+echo "[ARCHBUNTU] Creating first-login setup script..."
+sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/autostart"
+sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.local/share/applications"
+sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/Desktop"
 
-# ─── Apply Yaru theme ───
-echo "[ARCHBUNTU] Applying ArchBuntu theme..."
-sudo -u "$USERNAME" bash -c '
-    gsettings set org.gnome.desktop.interface icon-theme "Yaru" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface gtk-theme "Yaru" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface accent-color "orange" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface color-scheme "prefer-dark" 2>/dev/null || true
-'
+sudo -u "$USERNAME" bash -c "cat > /home/$USERNAME/.config/archbuntu-first-setup.sh << 'FIRSTSETUP'
+#!/bin/bash
 
-# ─── Install Yaru Color Picker script ───
+# This runs once on first login to apply GNOME settings (needs a display)
+
+echo \"[ARCHBUNTU] Applying ArchBuntu theme...\"
+
+# ─── Enable Dash to Dock ───
+gsettings set org.gnome.shell enabled-extensions \"[\\\"dash-to-dock@micxgx.gmail.com\\\"]\"
+
+# ─── Apply Yaru theme + dark mode ───
+gsettings set org.gnome.desktop.interface icon-theme \"Yaru\"
+gsettings set org.gnome.desktop.interface gtk-theme \"Yaru\"
+gsettings set org.gnome.desktop.interface accent-color \"orange\"
+gsettings set org.gnome.desktop.interface color-scheme \"prefer-dark\"
+
+# ─── Apply wallpaper (dark) ───
+WALLPAPER=\"/usr/share/backgrounds/ArchBuntu/wallpaper-dark.png\"
+if [[ -f \"\$WALLPAPER\" ]]; then
+    gsettings set org.gnome.desktop.background picture-uri \"file://\$WALLPAPER\"
+    gsettings set org.gnome.desktop.background picture-uri-dark \"file://\$WALLPAPER\"
+fi
+
+# ─── Cleanup: remove this autostart entry ───
+rm -f ~/.config/autostart/archbuntu-first-setup.desktop
+rm -f ~/.config/archbuntu-first-setup.sh
+
+echo \"[ARCHBUNTU] First-time setup complete!\"
+FIRSTSETUP
+chmod +x /home/$USERNAME/.config/archbuntu-first-setup.sh"
+
+# Autostart .desktop for first-login setup
+sudo -u "$USERNAME" bash -c "cat > /home/$USERNAME/.config/autostart/archbuntu-first-setup.desktop << 'AUTOSTART'
+[Desktop Entry]
+Type=Application
+Name=ArchBuntu First Setup
+Exec=/bin/bash -c '\$HOME/.config/archbuntu-first-setup.sh'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+AUTOSTART"
+
+# ─── Yaru Color Picker script ───
 echo "[ARCHBUNTU] Setting up Yaru Color Picker..."
-sudo -u "$USERNAME" mkdir -p /home/$USERNAME/Desktop
-
-sudo -u "$USERNAME" bash -c 'cat > ~/Desktop/yaru-color-picker.sh << "SCRIPT"
+sudo -u "$USERNAME" bash -c 'cat > /home/'"$USERNAME"'/Desktop/yaru-color-picker.sh << "SCRIPT"
 #!/bin/bash
 while true; do
     echo "=== Yaru Color Picker ==="
@@ -498,20 +512,21 @@ while true; do
     break
 done
 SCRIPT
-chmod +x ~/Desktop/yaru-color-picker.sh'
+chmod +x /home/'"$USERNAME"'/Desktop/yaru-color-picker.sh'
 
-sudo -u "$USERNAME" mkdir -p /home/$USERNAME/.local/share/applications
-sudo -u "$USERNAME" bash -c "cat > /home/$USERNAME/.local/share/applications/yaru-color-picker.desktop << DESKTOP
+cat > /home/'"$USERNAME"'/.local/share/applications/yaru-color-picker.desktop << "DESKTOP"
 [Desktop Entry]
 Name=Yaru Color Picker
 Comment=Change Yaru icon accent color
-Exec=kgx -e /home/$USERNAME/Desktop/yaru-color-picker.sh
+Exec=kgx -e /home/__USERNAME2__/Desktop/yaru-color-picker.sh
 Icon=org.gnome.Console
 Terminal=false
 Type=Application
 Categories=Settings;
-DESKTOP"
+DESKTOP'
+sed -i "s/__USERNAME2__/'"$USERNAME"'/g" /home/"$USERNAME"/.local/share/applications/yaru-color-picker.desktop'
 
+# ─── Done ───
 echo ""
 echo "[ARCHBUNTU] ========================================"
 echo "[ARCHBUNTU]   ArchBuntu installation complete!"
@@ -534,7 +549,7 @@ CHROOT_SCRIPT
 
     chmod +x /mnt/root/configure.sh
 
-    # Run inside chroot
+    log "Running configuration in chroot..."
     arch-chroot /mnt /root/configure.sh
 
     # Cleanup
@@ -559,7 +574,7 @@ main() {
     echo ""
     log "══════════════════════════════════════════"
     log "  ArchBuntu installed successfully!"
-    log "  Reboot to enjoy your new system."
+    log "  Remove install media and reboot."
     log "══════════════════════════════════════════"
 }
 
