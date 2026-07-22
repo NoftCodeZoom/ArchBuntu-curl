@@ -171,9 +171,10 @@ choose_drivers() {
     echo "  2) NVIDIA (proprietary - legacy closed-source)"
     echo "  3) AMD (AMDGPU - open source)"
     echo "  4) Intel (integrated graphics)"
-    echo "  5) None (skip GPU drivers)"
+    echo "  5) VirtualBox Guest Additions"
+    echo "  6) None (skip GPU drivers)"
     echo ""
-    read -rp "Choose driver [1-5]: " DRIVER_CHOICE
+    read -rp "Choose driver [1-6]: " DRIVER_CHOICE
     DRIVER_CHOICE=${DRIVER_CHOICE:-1}
 }
 
@@ -359,6 +360,10 @@ case "$DRIVER_CHOICE" in
         INSTALL_PKGS="$INSTALL_PKGS mesa lib32-mesa vulkan-intel lib32-vulkan-intel xf86-video-intel"
         ;;
     5)
+        echo "[ARCHBUNTU] Installing VirtualBox Guest Additions..."
+        INSTALL_PKGS="$INSTALL_PKGS virtualbox-guest-utils virtualbox-guest-modules-arch"
+        ;;
+    6)
         echo "[ARCHBUNTU] Skipping GPU drivers."
         ;;
 esac
@@ -382,6 +387,7 @@ echo "[ARCHBUNTU] Enabling services..."
 systemctl enable NetworkManager
 systemctl enable gdm
 systemctl enable bluetooth 2>/dev/null || true
+systemctl enable vboxservice 2>/dev/null || true
 
 # ─── Configure NVIDIA (if applicable) ───
 if [[ "$DRIVER_CHOICE" == "1" ]] || [[ "$DRIVER_CHOICE" == "2" ]]; then
