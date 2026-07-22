@@ -232,13 +232,12 @@ partition_disk() {
         fi
 
         log "Formatting partitions..."
-        mkfs.fat -F32 "$EFI_PART" &>/dev/null
-        mkfs.ext4 -F "$ROOT_PART" &>/dev/null
+        mkfs.fat -F32 "$EFI_PART"
+        mkfs.ext4 -F "$ROOT_PART"
     else
         log "Using manual partitions..."
-        log "Formatting partitions..."
-        mkfs.fat -F32 "$EFI_PART" &>/dev/null
-        mkfs.ext4 -F "$ROOT_PART" &>/dev/null
+        mkfs.fat -F32 "$EFI_PART"
+        mkfs.ext4 -F "$ROOT_PART"
     fi
 
     log "Mounting partitions..."
@@ -270,6 +269,7 @@ install_base() {
 configure_system() {
     log "Configuring system..."
 
+    # Write the chroot script as a real file (NOT a heredoc with set -e)
     cat > /mnt/root/configure.sh << 'CHROOT_SCRIPT'
 #!/usr/bin/env bash
 
@@ -284,7 +284,9 @@ ENABLE_OPTIONAL="__ENABLE_OPTIONAL__"
 EXTRA_PACKAGES="__EXTRA_PACKAGES__"
 ROOT_PART="__ROOT_PART__"
 
-set -e
+# NO set -e — we handle errors manually so the script never dies silently
+
+echo "[ARCHBUNTU] === Starting ArchBuntu configuration ==="
 
 # ─── Locale ───
 echo "[ARCHBUNTU] Setting locale..."
@@ -312,60 +314,68 @@ echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/wheel
 # ─── Enable multilib ───
 if [[ "$ENABLE_MULTILIB" == "y" ]]; then
     echo "[ARCHBUNTU] Enabling multilib repo..."
-    sed -i '/#\[multilib\]/{N;s/#\[multilib\]\n#Include/\[multilib\]\nInclude/}' /etc/pacman.conf
+    if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
+        sed -i '/#\[multilib\]/,/#Include/{
+            s/#\[multilib\]/[multilib]/
+            s/#Include/Include/
+        }' /etc/pacman.conf
+    fi
 fi
 
 # ─── Enable parallel downloads ───
-sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf
+sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf || true
 
 # ─── Sync ───
+echo "[ARCHBUNTU] Syncing package databases..."
 pacman -Sy --noconfirm
 
 # ─── Build package list ───
+echo "[ARCHBUNTU] Building package list..."
 INSTALL_PKGS="base-devel sudo git nano networkmanager gdm gnome gnome-tweaks noto-fonts noto-fonts-cjk noto-fonts-emoji ttf-liberation ttf-dejavu kgx"
 
 # ─── Driver packages ───
 case "$DRIVER_CHOICE" in
     1)
-        echo "[ARCHBUNTU] Installing NVIDIA (open) drivers..."
+        echo "[ARCHBUNTU] Adding NVIDIA (open) drivers..."
         INSTALL_PKGS="$INSTALL_PKGS nvidia-open-dkms nvidia-utils lib32-nvidia-utils nvidia-settings nvidia-prime egl-wayland"
         ;;
     2)
-        echo "[ARCHBUNTU] Installing NVIDIA (proprietary) drivers..."
+        echo "[ARCHBUNTU] Adding NVIDIA (proprietary) drivers..."
         INSTALL_PKGS="$INSTALL_PKGS nvidia-dkms nvidia-utils lib32-nvidia-utils nvidia-settings nvidia-prime egl-wayland"
         ;;
     3)
-        echo "[ARCHBUNTU] Installing AMD drivers..."
+        echo "[ARCHBUNTU] Adding AMD drivers..."
         INSTALL_PKGS="$INSTALL_PKGS mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon xf86-video-amdgpu"
         ;;
     4)
-        echo "[ARCHBUNTU] Installing Intel drivers..."
+        echo "[ARCHBUNTU] Adding Intel drivers..."
         INSTALL_PKGS="$INSTALL_PKGS mesa lib32-mesa vulkan-intel lib32-vulkan-intel xf86-video-intel"
         ;;
     5)
-        echo "[ARCHBUNTU] Installing VirtualBox Guest Additions..."
+        echo "[ARCHBUNTU] Adding VirtualBox Guest Additions..."
         INSTALL_PKGS="$INSTALL_PKGS virtualbox-guest-utils virtualbox-guest-modules-arch"
         ;;
     6)
-        echo "[ARCHBUNTU] Skipping GPU drivers."
+        echo "[ARCHBUNTU] No GPU drivers selected."
         ;;
 esac
 
 # ─── Optional packages ───
 if [[ "$ENABLE_OPTIONAL" == "y" ]]; then
-    echo "[ARCHBUNTU] Installing optional packages..."
+    echo "[ARCHBUNTU] Adding optional packages..."
     INSTALL_PKGS="$INSTALL_PKGS firefox vlc htop fastfetch flatpak usbutils bluez bluez-utils"
 fi
 
 # ─── Extra packages ───
 if [[ -n "$EXTRA_PACKAGES" ]]; then
-    echo "[ARCHBUNTU] Installing extra packages: $EXTRA_PACKAGES"
+    echo "[ARCHBUNTU] Adding extra packages: $EXTRA_PACKAGES"
     INSTALL_PKGS="$INSTALL_PKGS $EXTRA_PACKAGES"
 fi
 
 # ─── Install all packages ───
-echo "[ARCHBUNTU] Installing packages..."
+echo "[ARCHBUNTU] Installing packages: $INSTALL_PKGS"
 pacman -S --noconfirm --needed $INSTALL_PKGS
+echo "[ARCHBUNTU] Package installation complete."
 
 # ─── Enable services ───
 echo "[ARCHBUNTU] Enabling services..."
@@ -415,7 +425,7 @@ sudo -u "$USERNAME" bash -c '
     git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
     cd /tmp/paru-bin
     makepkg -si --noconfirm
-'
+' || echo "[ARCHBUNTU] WARNING: paru installation failed. AUR packages will need manual installation."
 rm -rf /tmp/paru-bin
 
 # ─── Install Yaru themes + Dash to Dock via paru ───
@@ -424,47 +434,45 @@ sudo -u "$USERNAME" bash -c '
     paru -S --noconfirm --needed \
         yaru-icon-theme yaru-gtk-theme yaru-gnome-shell-theme \
         gnome-shell-extension-dash-to-dock
-'
+' || echo "[ARCHBUNTU] WARNING: AUR theme installation failed. Will retry on first login."
 
-# ─── Build first-login setup script (gsettings can ONLY run with a display) ───
-echo "[ARCHBUNTU] Creating first-login setup script..."
+# ─── Create first-login setup script ───
+echo "[ARCHBUNTU] Creating first-login setup..."
 sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/autostart"
 sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.local/share/applications"
 sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/Desktop"
 
-sudo -u "$USERNAME" bash -c "cat > /home/$USERNAME/.config/archbuntu-first-setup.sh << 'FIRSTSETUP'
+# Write the first-login script
+cat > "/home/$USERNAME/.config/archbuntu-first-setup.sh" << 'FIRSTSETUP'
 #!/bin/bash
+echo "[ARCHBUNTU] Applying ArchBuntu theme..."
 
-# This runs once on first login to apply GNOME settings (needs a display)
+# Enable Dash to Dock
+gsettings set org.gnome.shell enabled-extensions "['dash-to-dock@micxgx.gmail.com']" 2>/dev/null || true
 
-echo \"[ARCHBUNTU] Applying ArchBuntu theme...\"
+# Apply Yaru theme + dark mode
+gsettings set org.gnome.desktop.interface icon-theme "Yaru" 2>/dev/null || true
+gsettings set org.gnome.desktop.interface gtk-theme "Yaru" 2>/dev/null || true
+gsettings set org.gnome.desktop.interface accent-color "orange" 2>/dev/null || true
+gsettings set org.gnome.desktop.interface color-scheme "prefer-dark" 2>/dev/null || true
 
-# ─── Enable Dash to Dock ───
-gsettings set org.gnome.shell enabled-extensions \"[\\\"dash-to-dock@micxgx.gmail.com\\\"]\"
-
-# ─── Apply Yaru theme + dark mode ───
-gsettings set org.gnome.desktop.interface icon-theme \"Yaru\"
-gsettings set org.gnome.desktop.interface gtk-theme \"Yaru\"
-gsettings set org.gnome.desktop.interface accent-color \"orange\"
-gsettings set org.gnome.desktop.interface color-scheme \"prefer-dark\"
-
-# ─── Apply wallpaper (dark) ───
-WALLPAPER=\"/usr/share/backgrounds/ArchBuntu/wallpaper-dark.png\"
-if [[ -f \"\$WALLPAPER\" ]]; then
-    gsettings set org.gnome.desktop.background picture-uri \"file://\$WALLPAPER\"
-    gsettings set org.gnome.desktop.background picture-uri-dark \"file://\$WALLPAPER\"
+# Apply wallpaper
+if [[ -f /usr/share/backgrounds/ArchBuntu/wallpaper-dark.png ]]; then
+    gsettings set org.gnome.desktop.background picture-uri "file:///usr/share/backgrounds/ArchBuntu/wallpaper-dark.png"
+    gsettings set org.gnome.desktop.background picture-uri-dark "file:///usr/share/backgrounds/ArchBuntu/wallpaper-dark.png"
 fi
 
-# ─── Cleanup: remove this autostart entry ───
+# Cleanup: run once then delete
 rm -f ~/.config/autostart/archbuntu-first-setup.desktop
 rm -f ~/.config/archbuntu-first-setup.sh
 
-echo \"[ARCHBUNTU] First-time setup complete!\"
+echo "[ARCHBUNTU] First-time setup complete!"
 FIRSTSETUP
-chmod +x /home/$USERNAME/.config/archbuntu-first-setup.sh"
+chmod +x "/home/$USERNAME/.config/archbuntu-first-setup.sh"
+chown "$USERNAME:$USERNAME" "/home/$USERNAME/.config/archbuntu-first-setup.sh"
 
-# Autostart .desktop for first-login setup
-sudo -u "$USERNAME" bash -c "cat > /home/$USERNAME/.config/autostart/archbuntu-first-setup.desktop << 'AUTOSTART'
+# Autostart .desktop
+cat > "/home/$USERNAME/.config/autostart/archbuntu-first-setup.desktop" << AUTOSTART
 [Desktop Entry]
 Type=Application
 Name=ArchBuntu First Setup
@@ -472,11 +480,12 @@ Exec=/bin/bash -c '\$HOME/.config/archbuntu-first-setup.sh'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
-AUTOSTART"
+AUTOSTART
+chown "$USERNAME:$USERNAME" "/home/$USERNAME/.config/autostart/archbuntu-first-setup.desktop"
 
 # ─── Yaru Color Picker script ───
 echo "[ARCHBUNTU] Setting up Yaru Color Picker..."
-sudo -u "$USERNAME" bash -c 'cat > /home/'"$USERNAME"'/Desktop/yaru-color-picker.sh << "SCRIPT"
+cat > "/home/$USERNAME/Desktop/yaru-color-picker.sh" << 'SCRIPT'
 #!/bin/bash
 while true; do
     echo "=== Yaru Color Picker ==="
@@ -512,21 +521,22 @@ while true; do
     break
 done
 SCRIPT
-chmod +x /home/'"$USERNAME"'/Desktop/yaru-color-picker.sh'
+chmod +x "/home/$USERNAME/Desktop/yaru-color-picker.sh"
+chown "$USERNAME:$USERNAME" "/home/$USERNAME/Desktop/yaru-color-picker.sh"
 
-cat > /home/'"$USERNAME"'/.local/share/applications/yaru-color-picker.desktop << "DESKTOP"
+# Color picker .desktop file
+cat > "/home/$USERNAME/.local/share/applications/yaru-color-picker.desktop" << DESKTOP
 [Desktop Entry]
 Name=Yaru Color Picker
 Comment=Change Yaru icon accent color
-Exec=kgx -e /home/__USERNAME2__/Desktop/yaru-color-picker.sh
+Exec=kgx -e /home/$USERNAME/Desktop/yaru-color-picker.sh
 Icon=org.gnome.Console
 Terminal=false
 Type=Application
 Categories=Settings;
-DESKTOP'
-sed -i "s/__USERNAME2__/'"$USERNAME"'/g" /home/"$USERNAME"/.local/share/applications/yaru-color-picker.desktop'
+DESKTOP
+chown "$USERNAME:$USERNAME" "/home/$USERNAME/.local/share/applications/yaru-color-picker.desktop"
 
-# ─── Done ───
 echo ""
 echo "[ARCHBUNTU] ========================================"
 echo "[ARCHBUNTU]   ArchBuntu installation complete!"
@@ -551,9 +561,14 @@ CHROOT_SCRIPT
 
     log "Running configuration in chroot..."
     arch-chroot /mnt /root/configure.sh
+    EXIT_CODE=$?
+
+    if [[ $EXIT_CODE -ne 0 ]]; then
+        warn "Chroot script exited with errors (code $EXIT_CODE). Check output above."
+    fi
 
     # Cleanup
-    rm /mnt/root/configure.sh
+    rm -f /mnt/root/configure.sh
 }
 
 # ─── Main ─────────────────────────────────────────────────
